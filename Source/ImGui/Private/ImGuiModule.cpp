@@ -17,7 +17,7 @@
 
 #include <Interfaces/IPluginManager.h>
 
-#define IMGUI_REDIRECT_OBSOLETE_DELEGATES 1
+#define IMGUI_REDIRECT_OBSOLETE_DELEGATES 0
 
 
 #define LOCTEXT_NAMESPACE "FImGuiModule"
@@ -36,6 +36,10 @@ struct EDelegateCategory
 };
 
 static FImGuiModuleManager* ImGuiModuleManager = nullptr;
+FImGuiModuleManager* FImGuiModule::GetManager()
+{
+	return ImGuiModuleManager;
+}
 
 #if WITH_EDITOR
 static FImGuiEditor* ImGuiEditor = nullptr;
@@ -54,6 +58,18 @@ FImGuiDelegateHandle FImGuiModule::AddEditorImGuiDelegate(const FImGuiDelegate& 
 
 	return { ImGuiModuleManager->GetContextManager().GetEditorContextProxy().OnDraw().Add(Delegate),
 		EDelegateCategory::Default, Utilities::EDITOR_CONTEXT_INDEX };
+#endif // IMGUI_REDIRECT_OBSOLETE_DELEGATES
+}
+FImGuiDelegateHandle FImGuiModule::AddEditorWindowImGuiDelegate(const FImGuiDelegate& Delegate, int32 index)
+{
+#if IMGUI_REDIRECT_OBSOLETE_DELEGATES
+    return { FImGuiDelegatesContainer::Get().OnWorldDebug(Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + index).Add(Delegate),
+        EDelegateCategory::Default, Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + index };
+#else
+    checkf(ImGuiModuleManager, TEXT("Null pointer to internal module implementation. Is module available?"));
+
+    return { ImGuiModuleManager->GetContextManager().GetEditorWindowContextProxy(index).OnDraw().Add(Delegate),
+        EDelegateCategory::Default, Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + index };
 #endif // IMGUI_REDIRECT_OBSOLETE_DELEGATES
 }
 #endif

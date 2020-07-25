@@ -139,6 +139,43 @@ Delegates are called in order that allows multi-context delegates to add content
 
 > `FImGuiModule` has delegates interface but it is depreciated and will be removed soon. Major issue with that interface is that it needs a module instance, what can be a problem when trying to register static objects. Additional issue is a requirement to always unregister with a handle.
 
+### Using ImGui on editor window
+
+It is just a rough implementation without considerate review. To use ImGui on a unreal editor window, you can create a `SImGuiWidgetEd` on editor window, that is like other Slate widgets.
+
+Here is the example code:
+```C++
+#include "ImGuiModule.h"
+#include "ImGuiDelegates.h"
+#include "ImGuiWidgetEd.h"
+
+// other code ...
+
+// the example of drawing imgui on a TabWindow
+TSharedRef<SDockTab> OnSpawnPluginTab(const FSpawnTabArgs& SpawnTabArgs)
+{
+	// the unique index to create context for different editor windows
+	int contextIdx = 1;
+
+	// OnGUI function, contains imgui draw instructions
+	auto OnGUI = FImGuiDelegate::CreateLambda([]()
+				{
+					ImGui::ShowDemoWindow();
+				});
+
+	// bind the OnGUI function to the Editor Window Context
+	FImGuiModule::Get().AddEditorWindowImGuiDelegate(OnGUI, contextIdx);
+
+	// create the Slate Widget, the canvas for imgui
+	return SNew(SDockTab)
+		.TabRole(ETabRole::NomadTab)
+		[
+			SNew(SImGuiWidgetEd)
+			.ContextIndex(contextIdx)
+		];
+}
+```
+
 ### Multi-context
 
 In multi-PIE sessions each world gets its own ImGui context which is selected at the beginning of the world update. All that happens in the background and should allow debug code to stay context agnostic.
