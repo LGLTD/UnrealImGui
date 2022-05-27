@@ -7,6 +7,8 @@
 #include "ImGuiModuleCommands.h"
 #include "ImGuiModuleProperties.h"
 
+#include "Misc/EngineVersionComparison.h"
+#define UE4API UE_VERSION_OLDER_THAN(5,0,0)
 
 //====================================================================================================
 // UImGuiSettings
@@ -28,7 +30,11 @@ void UImGuiSettings::PostInitProperties()
 		ToggleInput = MoveTemp(SwitchInputModeKey_DEPRECATED);
 
 		// Remove from configuration file entry for obsolete property.
+#if UE4API
 		if (FConfigFile* ConfigFile = GConfig->Find(ConfigFileName, false))
+#else
+		if ( FConfigFile* ConfigFile = GConfig->Find( ConfigFileName ) )
+#endif
 		{
 			if (FConfigSection* Section = ConfigFile->Find(TEXT("/Script/ImGui.ImGuiSettings")))
 			{
