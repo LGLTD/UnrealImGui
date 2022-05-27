@@ -1,12 +1,10 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
+#include "ImGuiPrivatePCH.h"
+
 #include "SImGuiLayout.h"
 #include "SImGuiWidget.h"
 
-#include "ImGuiModuleManager.h"
-#include "ImGuiModuleSettings.h"
-
-#include <SlateOptMacros.h>
 #include <Widgets/Layout/SConstraintCanvas.h>
 #include <Widgets/Layout/SDPIScaler.h>
 #include <Widgets/Layout/SScaleBox.h>
@@ -17,18 +15,9 @@ void SImGuiLayout::Construct(const FArguments& InArgs)
 {
 	checkf(InArgs._GameViewport, TEXT("Null Game Viewport argument"));
 
-	ModuleManager = InArgs._ModuleManager;
 	GameViewport = InArgs._GameViewport;
 
-	if (ModuleManager)
-	{
-		auto& Settings = ModuleManager->GetSettings();
-		SetDPIScale(Settings.GetDPIScaleInfo());
-		if (!Settings.OnDPIScaleChangedDelegate.IsBoundToObject(this))
-		{
-			Settings.OnDPIScaleChangedDelegate.AddRaw(this, &SImGuiLayout::SetDPIScale);
-		}
-	}
+	// TODO: Remove instantiation of ImGui Widget outside of this class.
 
 	ChildSlot
 	[
@@ -39,9 +28,10 @@ void SImGuiLayout::Construct(const FArguments& InArgs)
 		.VAlign(VAlign_Fill)
 		.Visibility(EVisibility::SelfHitTestInvisible)
 		[
-			// Apply custom scale if needed.
+			// Apply custom scale if necessary.
+			// TODO: Bind to relevant parameter.
 			SNew(SDPIScaler)
-			.DPIScale(TAttribute<float>(this, &SImGuiLayout::GetDPIScale))
+			.DPIScale(1.f)
 			.Visibility(EVisibility::SelfHitTestInvisible)
 			[
 				SNew(SConstraintCanvas)
@@ -66,18 +56,4 @@ void SImGuiLayout::Construct(const FArguments& InArgs)
 
 	SetVisibility(EVisibility::SelfHitTestInvisible);
 }
-
-SImGuiLayout::~SImGuiLayout()
-{
-	if (ModuleManager)
-	{
-		ModuleManager->GetSettings().OnDPIScaleChangedDelegate.RemoveAll(this);
-	}
-}
-
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
-
-void SImGuiLayout::SetDPIScale(const FImGuiDPIScaleInfo& ScaleInfo)
-{
-	DPIScale = ScaleInfo.GetSlateScale();
-}

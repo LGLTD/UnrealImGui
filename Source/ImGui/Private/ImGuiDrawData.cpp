@@ -1,5 +1,7 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
+#include "ImGuiPrivatePCH.h"
+
 #include "ImGuiDrawData.h"
 
 
@@ -29,8 +31,13 @@ void FImGuiDrawList::CopyVertexData(TArray<FSlateVertex>& OutVertexBuffer, const
 		SlateVertex.Position[1] = VertexPosition.Y;
 		SlateVertex.ClipRect = VertexClippingRect;
 #else
-		SlateVertex.Position = Transform.TransformPoint(ImGuiInterops::ToVector2D(ImGuiVertex.pos));
-#endif // ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
+		// LUCID CHANGE (IMGUI) - Begin
+		// copy co-ords separate & cast for UE5 compat - maybe better than ifdeffing around engine versions? 
+		auto Pos = Transform.TransformPoint(ImGuiInterops::ToVector2D(ImGuiVertex.pos));
+		SlateVertex.Position.X = static_cast<float>(Pos.X);
+		SlateVertex.Position.Y = static_cast<float>(Pos.Y); 
+		// LUCID CHANGE (IMGUI) - End
+#endif	  // ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
 
 		// Unpack ImU32 color.
 		SlateVertex.Color = ImGuiInterops::UnpackImU32Color(ImGuiVertex.col);

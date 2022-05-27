@@ -7,11 +7,13 @@
 #include "ImGuiTextureHandle.h"
 
 #include <Modules/ModuleManager.h>
+class FImGuiModuleManager;
 
 
 class FImGuiModule : public IModuleInterface
 {
 public:
+    static FImGuiModuleManager* GetManager();
 
 	/**
 	 * Singleton-like access to this module's interface. This is just for convenience!
@@ -45,6 +47,8 @@ public:
 	 * @returns Returns handle that can be used to remove delegate (@see RemoveImGuiDelegate)
 	 */
 	virtual FImGuiDelegateHandle AddEditorImGuiDelegate(const FImGuiDelegate& Delegate);
+    
+    virtual FImGuiDelegateHandle AddEditorWindowImGuiDelegate(const FImGuiDelegate& Delegate, int32 index);
 #endif
 
 	/**

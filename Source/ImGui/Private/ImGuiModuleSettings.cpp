@@ -1,45 +1,12 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
+#include "ImGuiPrivatePCH.h"
+
 #include "ImGuiModuleSettings.h"
 
 #include "ImGuiModuleCommands.h"
 #include "ImGuiModuleProperties.h"
 
-#include <Engine/Engine.h>
-#include <GameFramework/GameUserSettings.h>
-#include <Misc/ConfigCacheIni.h>
-
-
-//====================================================================================================
-// FImGuiDPIScaleInfo
-//====================================================================================================
-
-FImGuiDPIScaleInfo::FImGuiDPIScaleInfo()
-{
-	if (FRichCurve* Curve = DPICurve.GetRichCurve())
-	{
-		Curve->AddKey(   0.0f, 1.f);
-
-		Curve->AddKey(2159.5f, 1.f);
-		Curve->AddKey(2160.0f, 2.f);
-
-		Curve->AddKey(4319.5f, 2.f);
-		Curve->AddKey(4320.0f, 4.f);
-	}
-}
-
-float FImGuiDPIScaleInfo::CalculateResolutionBasedScale() const
-{
-	float ResolutionBasedScale = 1.f;
-	if (bScaleWithCurve && GEngine && GEngine->GameUserSettings)
-	{
-		if (const FRichCurve* Curve = DPICurve.GetRichCurveConst())
-		{
-			ResolutionBasedScale *= Curve->Eval((float)GEngine->GameUserSettings->GetDesktopResolution().Y, 1.f);
-		}
-	}
-	return ResolutionBasedScale;
-}
 
 //====================================================================================================
 // UImGuiSettings
@@ -52,6 +19,32 @@ FSimpleMulticastDelegate UImGuiSettings::OnSettingsLoaded;
 void UImGuiSettings::PostInitProperties()
 {
 	Super::PostInitProperties();
+
+	if (SwitchInputModeKey_DEPRECATED.Key.IsValid() && !ToggleInput.Key.IsValid())
+	{
+		const FString ConfigFileName = GetDefaultConfigFilename();
+
+		// Move value to the new property.
+		ToggleInput = MoveTemp(SwitchInputModeKey_DEPRECATED);
+
+		// Remove from configuration file entry for obsolete property.
+		if (FConfigFile* ConfigFile = GConfig->Find(ConfigFileName, false))
+		{
+			if (FConfigSection* Section = ConfigFile->Find(TEXT("/Script/ImGui.ImGuiSettings")))
+			{
+				if (Section->Remove(TEXT("SwitchInputModeKey")))
+				{
+					ConfigFile->Dirty = true;
+					GConfig->Flush(false, ConfigFileName);
+				}
+			}
+		}
+
+		// Add to configuration file entry for new property.
+		UpdateSinglePropertyInConfigFile(
+			UImGuiSettings::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UImGuiSettings, ToggleInput)),
+			ConfigFileName);
+	}
 
 	if (IsTemplate())
 	{
@@ -84,10 +77,10 @@ FImGuiModuleSettings::FImGuiModuleSettings(FImGuiModuleProperties& InProperties,
 
 	// Delegate initializer to support settings loaded after this object creation (in stand-alone builds) and potential
 	// reloading of settings.
-	UImGuiSettings::OnSettingsLoaded.AddRaw(this, &FImGuiModuleSettings::InitializeAllSettings);
+	UImGuiSettings::OnSettingsLoaded.AddRaw(this, &FImGuiModuleSettings::UpdateSettings);
 
 	// Call initializer to support settings already loaded (editor).
-	InitializeAllSettings();
+	UpdateSettings();
 }
 
 FImGuiModuleSettings::~FImGuiModuleSettings()
@@ -100,12 +93,6 @@ FImGuiModuleSettings::~FImGuiModuleSettings()
 #endif
 }
 
-void FImGuiModuleSettings::InitializeAllSettings()
-{
-	UpdateSettings();
-	UpdateDPIScaleInfo();
-}
-
 void FImGuiModuleSettings::UpdateSettings()
 {
 	if (UImGuiSettings* SettingsObject = UImGuiSettings::Get())
@@ -116,19 +103,11 @@ void FImGuiModuleSettings::UpdateSettings()
 		SetShareMouseInput(SettingsObject->bShareMouseInput);
 		SetUseSoftwareCursor(SettingsObject->bUseSoftwareCursor);
 		SetToggleInputKey(SettingsObject->ToggleInput);
-		SetCanvasSizeInfo(SettingsObject->CanvasSize);
+		SetAdaptiveCanvasSize(SettingsObject->bAdaptiveCanvasSize);
 	}
 }
 
-void FImGuiModuleSettings::UpdateDPIScaleInfo()
-{
-	if (UImGuiSettings* SettingsObject = UImGuiSettings::Get())
-	{
-		SetDPIScaleInfo(SettingsObject->DPIScale);
-	}
-}
-
-void FImGuiModuleSettings::SetImGuiInputHandlerClass(const FStringClassReference& ClassReference)
+void FImGuiModuleSettings::SetImGuiInputHandlerClass(const FSoftClassPath& ClassReference)
 {
 	if (ImGuiInputHandlerClass != ClassReference)
 	{
@@ -182,19 +161,12 @@ void FImGuiModuleSettings::SetToggleInputKey(const FImGuiKeyInfo& KeyInfo)
 	}
 }
 
-void FImGuiModuleSettings::SetCanvasSizeInfo(const FImGuiCanvasSizeInfo& CanvasSizeInfo)
+void FImGuiModuleSettings::SetAdaptiveCanvasSize(bool bAdaptive)
 {
-	if (CanvasSize != CanvasSizeInfo)
+	if (bAdaptiveCanvasSize != bAdaptive)
 	{
-		CanvasSize = CanvasSizeInfo;
-		OnCanvasSizeChangedDelegate.Broadcast(CanvasSize);
+		bAdaptiveCanvasSize = bAdaptive;
 	}
-}
-
-void FImGuiModuleSettings::SetDPIScaleInfo(const FImGuiDPIScaleInfo& ScaleInfo)
-{
-	DPIScale = ScaleInfo;
-	OnDPIScaleChangedDelegate.Broadcast(DPIScale);
 }
 
 #if WITH_EDITOR
@@ -204,11 +176,6 @@ void FImGuiModuleSettings::OnPropertyChanged(class UObject* ObjectBeingModified,
 	if (ObjectBeingModified == UImGuiSettings::Get())
 	{
 		UpdateSettings();
-		if (PropertyChangedEvent.MemberProperty
-			&& (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FImGuiModuleSettings, DPIScale)))
-		{
-			UpdateDPIScaleInfo();
-		}
 	}
 }
 

@@ -2,10 +2,8 @@
 
 #pragma once
 
-#include <Delegates/Delegate.h>
+#include <Core.h>
 
-
-class UWorld;
 
 /**
  * Delegates to ImGui debug events. World delegates are called once per frame during world updates and have invocation

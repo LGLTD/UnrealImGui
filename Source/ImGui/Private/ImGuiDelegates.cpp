@@ -1,9 +1,9 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
+#include "ImGuiPrivatePCH.h"
+
 #include "ImGuiDelegates.h"
 #include "ImGuiDelegatesContainer.h"
-
-#include <Engine/World.h>
 
 
 FSimpleMulticastDelegate& FImGuiDelegates::OnWorldEarlyDebug()

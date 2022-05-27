@@ -1,5 +1,7 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
+#include "ImGuiPrivatePCH.h"
+
 #include "SImGuiWidget.h"
 #include "SImGuiCanvasControl.h"
 
@@ -12,15 +14,9 @@
 #include "ImGuiModuleSettings.h"
 #include "TextureManager.h"
 #include "Utilities/Arrays.h"
-#include "VersionCompatibility.h"
+#include "Utilities/ScopeGuards.h"
 
 #include <Engine/Console.h>
-#include <Engine/GameViewportClient.h>
-#include <Engine/LocalPlayer.h>
-#include <Framework/Application/SlateApplication.h>
-#include <GameFramework/GameUserSettings.h>
-#include <SlateOptMacros.h>
-#include <Widgets/SViewport.h>
 
 #include <utility>
 
@@ -61,24 +57,6 @@ namespace CVars
 }
 #endif // IMGUI_WIDGET_DEBUG
 
-namespace
-{
-	FORCEINLINE FVector2D MaxVector(const FVector2D& A, const FVector2D& B)
-	{
-		return FVector2D(FMath::Max(A.X, B.X), FMath::Max(A.Y, B.Y));
-	}
-
-	FORCEINLINE FVector2D RoundVector(const FVector2D& Vector)
-	{
-		return FVector2D(FMath::RoundToFloat(Vector.X), FMath::RoundToFloat(Vector.Y));
-	}
-
-	FORCEINLINE FSlateRenderTransform RoundTranslation(const FSlateRenderTransform& Transform)
-	{
-		return FSlateRenderTransform(Transform.GetMatrix(), RoundVector(Transform.GetTranslation()));
-	}
-}
-
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SImGuiWidget::Construct(const FArguments& InArgs)
 {
@@ -106,8 +84,7 @@ void SImGuiWidget::Construct(const FArguments& InArgs)
 	const auto& Settings = ModuleManager->GetSettings();
 	SetHideMouseCursor(Settings.UseSoftwareCursor());
 	CreateInputHandler(Settings.GetImGuiInputHandlerClass());
-	SetDPIScale(Settings.GetDPIScaleInfo());
-	SetCanvasSizeInfo(Settings.GetCanvasSizeInfo());
+	SetAdaptiveCanvasSize(Settings.AdaptiveCanvasSize());
 
 	// Initialize state.
 	UpdateVisibility();
@@ -184,7 +161,7 @@ FReply SImGuiWidget::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const
 	return InputHandler->OnMouseButtonDoubleClick(MouseEvent).LockMouseToWidget(SharedThis(this));
 }
 
-namespace
+namespace UnrealImGui
 {
 	bool NeedMouseLock(const FPointerEvent& MouseEvent)
 	{
@@ -200,7 +177,7 @@ namespace
 FReply SImGuiWidget::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	FReply Reply = InputHandler->OnMouseButtonUp(MouseEvent);
-	if (!NeedMouseLock(MouseEvent))
+	if (!UnrealImGui::NeedMouseLock(MouseEvent))
 	{
 		Reply.ReleaseMouseLock();
 	}
@@ -275,7 +252,7 @@ FReply SImGuiWidget::OnTouchEnded(const FGeometry& MyGeometry, const FPointerEve
 	return InputHandler->OnTouchEnded(TransformScreenPointToImGui(MyGeometry, TouchEvent.GetScreenSpacePosition()), TouchEvent);
 }
 
-void SImGuiWidget::CreateInputHandler(const FStringClassReference& HandlerClassReference)
+void SImGuiWidget::CreateInputHandler(const FSoftClassPath& HandlerClassReference)
 {
 	ReleaseInputHandler();
 
@@ -306,14 +283,6 @@ void SImGuiWidget::RegisterImGuiSettingsDelegates()
 	{
 		Settings.OnUseSoftwareCursorChanged.AddRaw(this, &SImGuiWidget::SetHideMouseCursor);
 	}
-	if (!Settings.OnDPIScaleChangedDelegate.IsBoundToObject(this))
-	{
-		Settings.OnDPIScaleChangedDelegate.AddRaw(this, &SImGuiWidget::SetDPIScale);
-	}
-	if (!Settings.OnCanvasSizeChangedDelegate.IsBoundToObject(this))
-	{
-		Settings.OnCanvasSizeChangedDelegate.AddRaw(this, &SImGuiWidget::SetCanvasSizeInfo);
-	}
 }
 
 void SImGuiWidget::UnregisterImGuiSettingsDelegates()
@@ -322,8 +291,6 @@ void SImGuiWidget::UnregisterImGuiSettingsDelegates()
 
 	Settings.OnImGuiInputHandlerClassChanged.RemoveAll(this);
 	Settings.OnUseSoftwareCursorChanged.RemoveAll(this);
-	Settings.OnDPIScaleChangedDelegate.RemoveAll(this);
-	Settings.OnCanvasSizeChangedDelegate.RemoveAll(this);
 }
 
 void SImGuiWidget::SetHideMouseCursor(bool bHide)
@@ -531,48 +498,14 @@ void SImGuiWidget::HandleWindowFocusLost()
 	}
 }
 
-void SImGuiWidget::SetDPIScale(const FImGuiDPIScaleInfo& ScaleInfo)
+void SImGuiWidget::SetAdaptiveCanvasSize(bool bEnabled)
 {
-	const float Scale = ScaleInfo.GetSlateScale();
-	if (DPIScale != Scale)
+	if (bAdaptiveCanvasSize != bEnabled)
 	{
-		DPIScale = Scale;
+		bAdaptiveCanvasSize = bEnabled;
 		bUpdateCanvasSize = true;
+		UpdateCanvasSize();
 	}
-}
-
-void SImGuiWidget::SetCanvasSizeInfo(const FImGuiCanvasSizeInfo& CanvasSizeInfo)
-{
-	switch (CanvasSizeInfo.SizeType)
-	{
-		case EImGuiCanvasSizeType::Custom:
-			MinCanvasSize = { static_cast<float>(CanvasSizeInfo.Width), static_cast<float>(CanvasSizeInfo.Height) };
-			bAdaptiveCanvasSize = CanvasSizeInfo.bExtendToViewport;
-			bCanvasControlEnabled = true;
-			break;
-
-		case EImGuiCanvasSizeType::Desktop:
-			MinCanvasSize = (GEngine && GEngine->GameUserSettings)
-				? GEngine->GameUserSettings->GetDesktopResolution() : FVector2D::ZeroVector;
-			bAdaptiveCanvasSize = CanvasSizeInfo.bExtendToViewport;
-			bCanvasControlEnabled = true;
-			break;
-
-		case EImGuiCanvasSizeType::Viewport:
-		default:
-			MinCanvasSize = FVector2D::ZeroVector;
-			bAdaptiveCanvasSize = true;
-			bCanvasControlEnabled = false;
-	}
-
-	// We only update canvas control widget when canvas control is enabled. Make sure that we will not leave
-	// that widget active after disabling canvas control.
-	if (CanvasControlWidget.IsValid() && !bCanvasControlEnabled)
-	{
-		CanvasControlWidget->SetActive(false);
-	}
-
-	bUpdateCanvasSize = true;
 }
 
 void SImGuiWidget::UpdateCanvasSize()
@@ -581,34 +514,28 @@ void SImGuiWidget::UpdateCanvasSize()
 	{
 		if (auto* ContextProxy = ModuleManager->GetContextManager().GetContextProxy(ContextIndex))
 		{
-			CanvasSize = MinCanvasSize;
-			if (bAdaptiveCanvasSize && GameViewport.IsValid())
+			if (bAdaptiveCanvasSize)
 			{
-				FVector2D ViewportSize;
-				GameViewport->GetViewportSize(ViewportSize);
-				CanvasSize = MaxVector(CanvasSize, ViewportSize);
+				if (GameViewport.IsValid())
+				{
+					FVector2D DisplaySize;
+					GameViewport->GetViewportSize(DisplaySize);
+					ContextProxy->SetDisplaySize(DisplaySize);
+				}
 			}
 			else
 			{
-				// No need for more updates, if we successfully processed fixed-canvas size.
+				ContextProxy->ResetDisplaySize();
+				// No need for more updates, if we successfully processed fixed-canvas mode.
 				bUpdateCanvasSize = false;
 			}
-
-			// Clamping DPI Scale to keep the canvas size from getting too big.
-			CanvasSize /= FMath::Max(DPIScale, 0.01f);
-			CanvasSize = RoundVector(CanvasSize);
-
-			ContextProxy->SetDisplaySize(CanvasSize);
 		}
 	}
 }
 
 void SImGuiWidget::UpdateCanvasControlMode(const FInputEvent& InputEvent)
 {
-	if (bCanvasControlEnabled)
-	{
-		CanvasControlWidget->SetActive(InputEvent.IsLeftAltDown() && InputEvent.IsLeftShiftDown());
-	}
+	CanvasControlWidget->SetActive(!bAdaptiveCanvasSize && InputEvent.IsLeftAltDown() && InputEvent.IsLeftShiftDown());
 }
 
 void SImGuiWidget::OnPostImGuiUpdate()
@@ -623,6 +550,16 @@ FVector2D SImGuiWidget::TransformScreenPointToImGui(const FGeometry& MyGeometry,
 	return ImGuiToScreen.Inverse().TransformPoint(Point);
 }
 
+namespace UnrealImGui
+{
+	FSlateRenderTransform RoundTranslation(const FSlateRenderTransform& Transform)
+	{
+		const FVector2D& Translation = Transform.GetTranslation();
+		return FSlateRenderTransform{ Transform.GetMatrix(),
+			FVector2D{ FMath::RoundToFloat(Translation.X), FMath::RoundToFloat(Translation.Y) } };
+	}
+}
+
 int32 SImGuiWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyClippingRect,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& WidgetStyle, bool bParentEnabled) const
 {
@@ -635,7 +572,7 @@ int32 SImGuiWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 		// Calculate transform from ImGui to screen space. Rounding translation is necessary to keep it pixel-perfect
 		// in older engine versions.
 		const FSlateRenderTransform& WidgetToScreen = AllottedGeometry.GetAccumulatedRenderTransform();
-		const FSlateRenderTransform ImGuiToScreen = RoundTranslation(ImGuiRenderTransform.Concatenate(WidgetToScreen));
+		const FSlateRenderTransform ImGuiToScreen = UnrealImGui::RoundTranslation(ImGuiRenderTransform.Concatenate(WidgetToScreen));
 
 #if ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
 		// Convert clipping rectangle to format required by Slate vertex.
@@ -646,6 +583,10 @@ int32 SImGuiWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 		{
 #if ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
 			DrawList.CopyVertexData(VertexBuffer, ImGuiToScreen, VertexClippingRect);
+
+			// Get access to the Slate scissor rectangle defined in Slate Core API, so we can customize elements drawing.
+			extern SLATECORE_API TOptional<FShortRect> GSlateScissorRect;
+			auto GSlateScissorRectSaver = ScopeGuards::MakeStateSaver(GSlateScissorRect);
 #else
 			DrawList.CopyVertexData(VertexBuffer, ImGuiToScreen);
 #endif // ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
@@ -667,9 +608,7 @@ int32 SImGuiWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 				const FSlateRect ClippingRect = DrawCommand.ClippingRect.IntersectionWith(MyClippingRect);
 
 #if ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
-				// Get access to the Slate scissor rectangle defined in Slate Core API, so we can customize elements drawing.
-				extern SLATECORE_API TOptional<FShortRect> GSlateScissorRect;
-				TGuardValue<TOptional<FShortRect>> GSlateScissorRecGuard(GSlateScissorRect, FShortRect{ ClippingRect });
+				GSlateScissorRect = FShortRect{ ClippingRect };
 #else
 				OutDrawElements.PushClip(FSlateClippingZone{ ClippingRect });
 #endif // ENGINE_COMPATIBILITY_LEGACY_CLIPPING_API
@@ -689,7 +628,7 @@ int32 SImGuiWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 FVector2D SImGuiWidget::ComputeDesiredSize(float Scale) const
 {
-	return CanvasSize * Scale;
+	return FVector2D{ 3840.f, 2160.f } * Scale;
 }
 
 #if IMGUI_WIDGET_DEBUG
@@ -733,25 +672,6 @@ static TArray<FKey> GetImGuiMappedKeys()
 	return Keys;
 }
 
-namespace
-{
-	void Text(const char* Str)
-	{
-		ImGui::Text("%s:", Str);
-	}
-
-	void Text(const wchar_t* Str)
-	{
-		ImGui::Text("%ls:", Str);
-	}
-
-	template<typename CharType = std::enable_if_t<!std::is_same<TCHAR, char>::value && !std::is_same<TCHAR, wchar_t>::value, TCHAR>>
-	void Text(const CharType* Str)
-	{
-		ImGui::Text("%ls", TCHAR_TO_WCHAR(Str));
-	}
-}
-
 // Column layout utilities.
 namespace Columns
 {
@@ -777,46 +697,52 @@ namespace TwoColumns
 		Columns::CollapsingGroup(Name, 2, std::forward<FunctorType>(DrawContent));
 	}
 
+	namespace
+	{
+		void LabelText(const char* Label)
+		{
+			ImGui::Text("%s:", Label);
+		}
+
+		void LabelText(const wchar_t* Label)
+		{
+			ImGui::Text("%ls:", Label);
+		}
+	}
+
 	template<typename LabelType>
 	static void Value(LabelType&& Label, int32 Value)
 	{
-		Text(Label); ImGui::NextColumn();
+		LabelText(Label); ImGui::NextColumn();
 		ImGui::Text("%d", Value); ImGui::NextColumn();
 	}
 
 	template<typename LabelType>
 	static void Value(LabelType&& Label, uint32 Value)
 	{
-		Text(Label); ImGui::NextColumn();
+		LabelText(Label); ImGui::NextColumn();
 		ImGui::Text("%u", Value); ImGui::NextColumn();
 	}
 
 	template<typename LabelType>
 	static void Value(LabelType&& Label, float Value)
 	{
-		Text(Label); ImGui::NextColumn();
+		LabelText(Label); ImGui::NextColumn();
 		ImGui::Text("%f", Value); ImGui::NextColumn();
 	}
 
 	template<typename LabelType>
 	static void Value(LabelType&& Label, bool bValue)
 	{
-		Text(Label); ImGui::NextColumn();
-		Text(TEXT_BOOL(bValue)); ImGui::NextColumn();
+		LabelText(Label); ImGui::NextColumn();
+		ImGui::Text("%ls", TEXT_BOOL(bValue)); ImGui::NextColumn();
 	}
 
 	template<typename LabelType>
 	static void Value(LabelType&& Label, const TCHAR* Value)
 	{
-		Text(Label); ImGui::NextColumn();
-		Text(Value); ImGui::NextColumn();
-	}
-
-	template<typename LabelType>
-	static void ValueWidthHeight(LabelType&& Label, const FVector2D& Value)
-	{
-		Text(Label); ImGui::NextColumn();
-		ImGui::Text("Width = %.0f, Height = %.0f", Value.X, Value.Y); ImGui::NextColumn();
+		LabelText(Label); ImGui::NextColumn();
+		ImGui::Text("%ls", Value); ImGui::NextColumn();
 	}
 }
 
@@ -844,7 +770,7 @@ void SImGuiWidget::OnDebugDraw()
 	if (CVars::DebugWidget.GetValueOnGameThread() > 0)
 	{
 		bool bDebug = true;
-		ImGui::SetNextWindowSize(ImVec2(380, 480), ImGuiCond_Once);
+		ImGui::SetNextWindowSize(ImVec2(380, 480), ImGuiSetCond_Once);
 		if (ImGui::Begin("ImGui Widget Debug", &bDebug))
 		{
 			ImGui::Spacing();
@@ -854,20 +780,6 @@ void SImGuiWidget::OnDebugDraw()
 				TwoColumns::Value("Context Index", ContextIndex);
 				TwoColumns::Value("Context Name", ContextProxy ? *ContextProxy->GetName() : TEXT("< Null >"));
 				TwoColumns::Value("Game Viewport", *GameViewport->GetName());
-			});
-
-			TwoColumns::CollapsingGroup("Canvas Size", [&]()
-			{
-				TwoColumns::Value("Is Adaptive", bAdaptiveCanvasSize);
-				TwoColumns::Value("Is Updating", bUpdateCanvasSize);
-				TwoColumns::ValueWidthHeight("Min Canvas Size", MinCanvasSize);
-				TwoColumns::ValueWidthHeight("Canvas Size", CanvasSize);
-			});
-
-			TwoColumns::CollapsingGroup("DPI Scale", [&]()
-			{
-				TwoColumns::Value("Slate Scale", DPIScale);
-				TwoColumns::Value("ImGui Scale", ContextProxy ? ContextProxy->GetDPIScale() : 1.f);
 			});
 
 			TwoColumns::CollapsingGroup("Input Mode", [&]()
@@ -909,7 +821,7 @@ void SImGuiWidget::OnDebugDraw()
 		FImGuiInputState& InputState = ContextProxy->GetInputState();
 
 		bool bDebug = true;
-		ImGui::SetNextWindowSize(ImVec2(460, 480), ImGuiCond_Once);
+		ImGui::SetNextWindowSize(ImVec2(460, 480), ImGuiSetCond_Once);
 		if (ImGui::Begin("ImGui Input State", &bDebug))
 		{
 			const ImVec4 HiglightColor{ 1.f, 1.f, 0.5f, 1.f };

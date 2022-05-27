@@ -1,11 +1,11 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
-#include "DebugExecBindings.h"
+#include "ImGuiPrivatePCH.h"
 
+#include "DebugExecBindings.h"
 #include "ImGuiModuleSettings.h"
 
 #include <GameFramework/PlayerInput.h>
-#include <UObject/UObjectIterator.h>
 
 
 namespace
@@ -40,7 +40,7 @@ namespace
 
 	bool IsBindable(const FKey& Key)
 	{
-		return Key.IsValid() && Key != EKeys::AnyKey && !Key.IsFloatAxis() && !Key.IsVectorAxis()
+		return Key.IsValid() && Key != EKeys::AnyKey && !Key.IsAxis1D() && !Key.IsAxis3D()
 			&& !Key.IsGamepadKey() && !Key.IsModifierKey() && !Key.IsMouseButton();
 	}
 

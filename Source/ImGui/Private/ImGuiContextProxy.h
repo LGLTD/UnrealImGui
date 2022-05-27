@@ -19,7 +19,7 @@ class FImGuiContextProxy
 {
 public:
 
-	FImGuiContextProxy(const FString& Name, int32 InContextIndex, ImFontAtlas* InFontAtlas, float InDPIScale);
+	FImGuiContextProxy(const FString& Name, int32 InContextIndex, FSimpleMulticastDelegate* InSharedDrawEvent, ImFontAtlas* InFontAtlas);
 	~FImGuiContextProxy();
 
 	FImGuiContextProxy(const FImGuiContextProxy&) = delete;
@@ -53,12 +53,6 @@ public:
 	// Reset the desired context display size to default size.
 	void ResetDisplaySize();
 
-	// Get the DPI scale set for this context.
-	float GetDPIScale() const { return DPIScale; }
-
-	// Set the DPI scale for this context.
-	void SetDPIScale(float Scale);
-
 	// Whether this context has an active item (read once per frame during context update).
 	bool HasActiveItem() const { return bHasActiveItem; }
 
@@ -68,8 +62,7 @@ public:
 	// Cursor type desired by this context (updated once per frame during context update).
 	EMouseCursor::Type GetMouseCursor() const { return MouseCursor;  }
 
-	// Internal draw event used to draw module's examples and debug widgets. Unlike the delegates container, it is not
-	// passed when the module is reloaded, so all objects that are unloaded with the module should register here.
+	// Delegate called right before ending the frame to allows listeners draw their controls.
 	FSimpleMulticastDelegate& OnDraw() { return DrawEvent; }
 
 	// Call early debug events to allow listeners draw their debug widgets.
@@ -97,7 +90,6 @@ private:
 	ImGuiContext* Context;
 
 	FVector2D DisplaySize = FVector2D::ZeroVector;
-	float DPIScale = 1.f;
 
 	EMouseCursor::Type MouseCursor = EMouseCursor::None;
 	bool bHasActiveItem = false;
@@ -117,6 +109,7 @@ private:
 	uint32 LastFrameNumber = 0;
 
 	FSimpleMulticastDelegate DrawEvent;
+	FSimpleMulticastDelegate* SharedDrawEvent = nullptr;
 
 	std::string IniFilename;
 };

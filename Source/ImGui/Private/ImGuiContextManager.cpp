@@ -1,10 +1,12 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
+#include "ImGuiPrivatePCH.h"
+
 #include "ImGuiContextManager.h"
 
 #include "ImGuiDelegatesContainer.h"
 #include "ImGuiImplementation.h"
-#include "ImGuiModuleSettings.h"
+#include "Utilities/ScopeGuards.h"
 #include "Utilities/WorldContext.h"
 #include "Utilities/WorldContextIndex.h"
 
@@ -57,13 +59,11 @@ namespace
 #endif // WITH_EDITOR
 }
 
-FImGuiContextManager::FImGuiContextManager(FImGuiModuleSettings& InSettings)
-	: Settings(InSettings)
+FImGuiContextManager::FImGuiContextManager()
 {
-	Settings.OnDPIScaleChangedDelegate.AddRaw(this, &FImGuiContextManager::SetDPIScale);
-
-	SetDPIScale(Settings.GetDPIScaleInfo());
-	BuildFontAtlas();
+	unsigned char* Pixels;
+	int Width, Height, Bpp;
+	FontAtlas.GetTexDataAsRGBA32(&Pixels, &Width, &Height, &Bpp);
 
 	FWorldDelegates::OnWorldTickStart.AddRaw(this, &FImGuiContextManager::OnWorldTickStart);
 #if ENGINE_COMPATIBILITY_WITH_WORLD_POST_ACTOR_TICK
@@ -73,8 +73,6 @@ FImGuiContextManager::FImGuiContextManager(FImGuiModuleSettings& InSettings)
 
 FImGuiContextManager::~FImGuiContextManager()
 {
-	Settings.OnDPIScaleChangedDelegate.RemoveAll(this);
-
 	// Order matters because contexts can be created during World Tick Start events.
 	FWorldDelegates::OnWorldTickStart.RemoveAll(this);
 #if ENGINE_COMPATIBILITY_WITH_WORLD_POST_ACTOR_TICK
@@ -100,13 +98,6 @@ void FImGuiContextManager::Tick(float DeltaSeconds)
 			FImGuiDelegatesContainer::Get().OnWorldDebug(Pair.Key).Clear();
 		}
 	}
-
-	// Once all context tick they should use new fonts and we can release the old resources. Extra countdown is added
-	// wait for contexts that ticked outside of this function, before rebuilding fonts.
-	if (FontResourcesReleaseCountdown > 0 && !--FontResourcesReleaseCountdown)
-	{
-		FontResourcesToRelease.Empty();
-	}
 }
 
 #if ENGINE_COMPATIBILITY_LEGACY_WORLD_ACTOR_TICK
@@ -118,7 +109,7 @@ void FImGuiContextManager::OnWorldTickStart(ELevelTick TickType, float DeltaSeco
 
 void FImGuiContextManager::OnWorldTickStart(UWorld* World, ELevelTick TickType, float DeltaSeconds)
 {
-	if (World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE
+	if (World && World->GetGameInstance() != nullptr && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE
 		|| World->WorldType == EWorldType::Editor))
 	{
 		FImGuiContextProxy& ContextProxy = GetWorldContextProxy(*World);
@@ -136,7 +127,7 @@ void FImGuiContextManager::OnWorldTickStart(UWorld* World, ELevelTick TickType, 
 #if ENGINE_COMPATIBILITY_WITH_WORLD_POST_ACTOR_TICK
 void FImGuiContextManager::OnWorldPostActorTick(UWorld* World, ELevelTick TickType, float DeltaSeconds)
 {
-	if (World && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE
+	if (World && World->GetGameInstance() != nullptr && (World->WorldType == EWorldType::Game || World->WorldType == EWorldType::PIE
 		|| World->WorldType == EWorldType::Editor))
 	{
 		GetWorldContextProxy(*World).DrawDebug();
@@ -151,8 +142,23 @@ FImGuiContextManager::FContextData& FImGuiContextManager::GetEditorContextData()
 
 	if (UNLIKELY(!Data))
 	{
-		Data = &Contexts.Emplace(Utilities::EDITOR_CONTEXT_INDEX, FContextData{ GetEditorContextName(), Utilities::EDITOR_CONTEXT_INDEX, FontAtlas, DPIScale, -1 });
-		OnContextProxyCreated.Broadcast(Utilities::EDITOR_CONTEXT_INDEX, *Data->ContextProxy);
+		Data = &Contexts.Emplace(Utilities::EDITOR_CONTEXT_INDEX, FContextData{ GetEditorContextName(), Utilities::EDITOR_CONTEXT_INDEX, DrawMultiContextEvent, FontAtlas, -1 });
+		ContextProxyCreatedEvent.Broadcast(Utilities::EDITOR_CONTEXT_INDEX, *Data->ContextProxy);
+	}
+
+	return *Data;
+}
+FImGuiContextManager::FContextData& FImGuiContextManager::GetEditorWindowContextData(int32 idx)
+{
+	FContextData* Data = Contexts.Find(Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + idx);
+
+	if (UNLIKELY(!Data))
+	{
+		Data = &Contexts.Emplace(
+			Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + idx, 
+			FContextData{ GetEditorContextName(), Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + idx, DrawMultiContextEvent, FontAtlas, -1 }
+		);
+		ContextProxyCreatedEvent.Broadcast(Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + idx, *Data->ContextProxy);
 	}
 
 	return *Data;
@@ -166,8 +172,8 @@ FImGuiContextManager::FContextData& FImGuiContextManager::GetStandaloneWorldCont
 
 	if (UNLIKELY(!Data))
 	{
-		Data = &Contexts.Emplace(Utilities::STANDALONE_GAME_CONTEXT_INDEX, FContextData{ GetWorldContextName(), Utilities::STANDALONE_GAME_CONTEXT_INDEX, FontAtlas, DPIScale });
-		OnContextProxyCreated.Broadcast(Utilities::STANDALONE_GAME_CONTEXT_INDEX, *Data->ContextProxy);
+		Data = &Contexts.Emplace(Utilities::STANDALONE_GAME_CONTEXT_INDEX, FContextData{ GetWorldContextName(), Utilities::STANDALONE_GAME_CONTEXT_INDEX, DrawMultiContextEvent, FontAtlas });
+		ContextProxyCreatedEvent.Broadcast(Utilities::STANDALONE_GAME_CONTEXT_INDEX, *Data->ContextProxy);
 	}
 
 	return *Data;
@@ -208,8 +214,8 @@ FImGuiContextManager::FContextData& FImGuiContextManager::GetWorldContextData(co
 #if WITH_EDITOR
 	if (UNLIKELY(!Data))
 	{
-		Data = &Contexts.Emplace(Index, FContextData{ GetWorldContextName(World), Index, FontAtlas, DPIScale, WorldContext->PIEInstance });
-		OnContextProxyCreated.Broadcast(Index, *Data->ContextProxy);
+		Data = &Contexts.Emplace(Index, FContextData{ GetWorldContextName(World), Index, DrawMultiContextEvent, FontAtlas, WorldContext->PIEInstance });
+		ContextProxyCreatedEvent.Broadcast(Index, *Data->ContextProxy);
 	}
 	else
 	{
@@ -219,8 +225,8 @@ FImGuiContextManager::FContextData& FImGuiContextManager::GetWorldContextData(co
 #else
 	if (UNLIKELY(!Data))
 	{
-		Data = &Contexts.Emplace(Index, FContextData{ GetWorldContextName(World), Index, FontAtlas, DPIScale });
-		OnContextProxyCreated.Broadcast(Index, *Data->ContextProxy);
+		Data = &Contexts.Emplace(Index, FContextData{ GetWorldContextName(World), Index, DrawMultiContextEvent, FontAtlas });
+		ContextProxyCreatedEvent.Broadcast(Index, *Data->ContextProxy);
 	}
 #endif
 
@@ -229,59 +235,4 @@ FImGuiContextManager::FContextData& FImGuiContextManager::GetWorldContextData(co
 		*OutIndex = Index;
 	}
 	return *Data;
-}
-
-void FImGuiContextManager::SetDPIScale(const FImGuiDPIScaleInfo& ScaleInfo)
-{
-	const float Scale = ScaleInfo.GetImGuiScale();
-	if (DPIScale != Scale)
-	{
-		DPIScale = Scale;
-
-		// Only rebuild font atlas if it is already built. Otherwise allow the other logic to pick a moment.
-		if (FontAtlas.IsBuilt())
-		{
-			RebuildFontAtlas();
-		}
-
-		for (auto& Pair : Contexts)
-		{
-			if (Pair.Value.ContextProxy)
-			{
-				Pair.Value.ContextProxy->SetDPIScale(DPIScale);
-			}
-		}
-	}
-}
-
-void FImGuiContextManager::BuildFontAtlas()
-{
-	if (!FontAtlas.IsBuilt())
-	{
-		ImFontConfig FontConfig = {};
-		FontConfig.SizePixels = FMath::RoundFromZero(13.f * DPIScale);
-		FontAtlas.AddFontDefault(&FontConfig);
-
-		unsigned char* Pixels;
-		int Width, Height, Bpp;
-		FontAtlas.GetTexDataAsRGBA32(&Pixels, &Width, &Height, &Bpp);
-
-		OnFontAtlasBuilt.Broadcast();
-	}
-}
-
-void FImGuiContextManager::RebuildFontAtlas()
-{
-	if (FontAtlas.IsBuilt())
-	{
-		// Keep the old resources alive for a few frames to give all contexts a chance to bind to new ones.
-		FontResourcesToRelease.Add(TUniquePtr<ImFontAtlas>(new ImFontAtlas()));
-		Swap(*FontResourcesToRelease.Last(), FontAtlas);
-
-		// Typically, one frame should be enough but since we allow for custom ticking, we need at least to frames to
-		// wait for contexts that already ticked and will not do that before the end of the next tick of this manager.
-		FontResourcesReleaseCountdown = 3;
-	}
-
-	BuildFontAtlas();
 }

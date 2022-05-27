@@ -1,9 +1,11 @@
 // Distributed under the MIT License (MIT) (see accompanying LICENSE file)
 
-#include "ImGuiModule.h"
+#include "ImGuiPrivatePCH.h"
+
+#include "ImGuiModuleManager.h"
 
 #include "ImGuiDelegatesContainer.h"
-#include "ImGuiModuleManager.h"
+#include "ImGuiTextureHandle.h"
 #include "TextureManager.h"
 #include "Utilities/WorldContext.h"
 #include "Utilities/WorldContextIndex.h"
@@ -14,6 +16,8 @@
 #endif
 
 #include <Interfaces/IPluginManager.h>
+
+#define IMGUI_REDIRECT_OBSOLETE_DELEGATES 0
 
 
 #define LOCTEXT_NAMESPACE "FImGuiModule"
@@ -32,6 +36,10 @@ struct EDelegateCategory
 };
 
 static FImGuiModuleManager* ImGuiModuleManager = nullptr;
+FImGuiModuleManager* FImGuiModule::GetManager()
+{
+	return ImGuiModuleManager;
+}
 
 #if WITH_EDITOR
 static FImGuiEditor* ImGuiEditor = nullptr;
@@ -42,24 +50,74 @@ static FImGuiEditor* ImGuiEditor = nullptr;
 #if WITH_EDITOR
 FImGuiDelegateHandle FImGuiModule::AddEditorImGuiDelegate(const FImGuiDelegate& Delegate)
 {
+#if IMGUI_REDIRECT_OBSOLETE_DELEGATES
 	return { FImGuiDelegatesContainer::Get().OnWorldDebug(Utilities::EDITOR_CONTEXT_INDEX).Add(Delegate),
 		EDelegateCategory::Default, Utilities::EDITOR_CONTEXT_INDEX };
+#else
+	checkf(ImGuiModuleManager, TEXT("Null pointer to internal module implementation. Is module available?"));
+
+	return { ImGuiModuleManager->GetContextManager().GetEditorContextProxy().OnDraw().Add(Delegate),
+		EDelegateCategory::Default, Utilities::EDITOR_CONTEXT_INDEX };
+#endif // IMGUI_REDIRECT_OBSOLETE_DELEGATES
+}
+FImGuiDelegateHandle FImGuiModule::AddEditorWindowImGuiDelegate(const FImGuiDelegate& Delegate, int32 index)
+{
+#if IMGUI_REDIRECT_OBSOLETE_DELEGATES
+    return { FImGuiDelegatesContainer::Get().OnWorldDebug(Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + index).Add(Delegate),
+        EDelegateCategory::Default, Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + index };
+#else
+    checkf(ImGuiModuleManager, TEXT("Null pointer to internal module implementation. Is module available?"));
+
+    return { ImGuiModuleManager->GetContextManager().GetEditorWindowContextProxy(index).OnDraw().Add(Delegate),
+        EDelegateCategory::Default, Utilities::EDITOR_WINDOW_CONTEXT_INDEX_OFFSET + index };
+#endif // IMGUI_REDIRECT_OBSOLETE_DELEGATES
 }
 #endif
 
 FImGuiDelegateHandle FImGuiModule::AddWorldImGuiDelegate(const FImGuiDelegate& Delegate)
 {
+#if IMGUI_REDIRECT_OBSOLETE_DELEGATES
 	const int32 ContextIndex = Utilities::GetWorldContextIndex((UWorld*)GWorld);
 	return { FImGuiDelegatesContainer::Get().OnWorldDebug(ContextIndex).Add(Delegate), EDelegateCategory::Default, ContextIndex };
+#else
+	checkf(ImGuiModuleManager, TEXT("Null pointer to internal module implementation. Is module available?"));
+
+#if WITH_EDITOR
+	checkf(GEngine, TEXT("Null GEngine. AddWorldImGuiDelegate should be only called with GEngine initialized."));
+
+	const FWorldContext* WorldContext = Utilities::GetWorldContext(*GEngine->GameViewport);
+	if (!WorldContext)
+	{
+		WorldContext = Utilities::GetWorldContextFromNetMode(ENetMode::NM_DedicatedServer);
+	}
+
+	checkf(WorldContext, TEXT("Couldn't find current world. AddWorldImGuiDelegate should be only called from a valid world."));
+
+	int32 Index;
+	FImGuiContextProxy& Proxy = ImGuiModuleManager->GetContextManager().GetWorldContextProxy(*WorldContext->World(), Index);
+#else
+	const int32 Index = Utilities::STANDALONE_GAME_CONTEXT_INDEX;
+	FImGuiContextProxy& Proxy = ImGuiModuleManager->GetContextManager().GetWorldContextProxy();
+#endif
+
+	return{ Proxy.OnDraw().Add(Delegate), EDelegateCategory::Default, Index };
+#endif // IMGUI_REDIRECT_OBSOLETE_DELEGATES
 }
 
 FImGuiDelegateHandle FImGuiModule::AddMultiContextImGuiDelegate(const FImGuiDelegate& Delegate)
 {
+#if IMGUI_REDIRECT_OBSOLETE_DELEGATES
 	return { FImGuiDelegatesContainer::Get().OnMultiContextDebug().Add(Delegate), EDelegateCategory::MultiContext };
+#else
+	checkf(ImGuiModuleManager, TEXT("Null pointer to internal module implementation. Is module available?"));
+
+	return { ImGuiModuleManager->GetContextManager().OnDrawMultiContext().Add(Delegate), EDelegateCategory::MultiContext };
+#endif
 }
 
 void FImGuiModule::RemoveImGuiDelegate(const FImGuiDelegateHandle& Handle)
 {
+#if IMGUI_REDIRECT_OBSOLETE_DELEGATES
 	if (Handle.Category == EDelegateCategory::MultiContext)
 	{
 		FImGuiDelegatesContainer::Get().OnMultiContextDebug().Remove(Handle.Handle);
@@ -68,6 +126,19 @@ void FImGuiModule::RemoveImGuiDelegate(const FImGuiDelegateHandle& Handle)
 	{
 		FImGuiDelegatesContainer::Get().OnWorldDebug(Handle.Index).Remove(Handle.Handle);
 	}
+#else
+	if (ImGuiModuleManager)
+	{
+		if (Handle.Category == EDelegateCategory::MultiContext)
+		{
+			ImGuiModuleManager->GetContextManager().OnDrawMultiContext().Remove(Handle.Handle);
+		}
+		else if (auto* Proxy = ImGuiModuleManager->GetContextManager().GetContextProxy(Handle.Index))
+		{
+			Proxy->OnDraw().Remove(Handle.Handle);
+		}
+	}
+#endif
 }
 
 #endif // IMGUI_WITH_OBSOLETE_DELEGATES
@@ -80,13 +151,7 @@ FImGuiTextureHandle FImGuiModule::FindTextureHandle(const FName& Name)
 
 FImGuiTextureHandle FImGuiModule::RegisterTexture(const FName& Name, class UTexture2D* Texture, bool bMakeUnique)
 {
-	FTextureManager& TextureManager = ImGuiModuleManager->GetTextureManager();
-
-	checkf(!bMakeUnique || TextureManager.FindTextureIndex(Name) == INDEX_NONE,
-		TEXT("Trying to register a texture with a name '%s' that is already used. Chose a different name ")
-		TEXT("or use bMakeUnique false, to update existing texture resources."), *Name.ToString());
-
-	const TextureIndex Index = TextureManager.CreateTextureResources(Name, Texture);
+	const TextureIndex Index = ImGuiModuleManager->GetTextureManager().CreateTextureResources(Name, Texture, bMakeUnique);
 	return FImGuiTextureHandle{ Name, ImGuiInterops::ToImTextureID(Index) };
 }
 
